@@ -1,0 +1,223 @@
+mod_restful - RESTful API for ejabberd
+======================================
+
+How to enable
+-------------
+
+Add it to a HTTP listener, or add a new HTTP listener:
+
+    {listen, [
+              {{8088, {127, 0, 0, 1}}, ejabberd_http,
+               [{request_handlers, [{["api"], mod_restful}]}]}
+             ]}.
+
+This will open the port 8088 listening on connections only on localhost.
+Requests to http://hostname:8088/api/* will be handled by mod_restful.
+
+Configuration
+-------------
+
+The module itself is configured separately. Available options are
+
+    {api, [APISpec]}
+      APISpec = {Path, Module, [ModuleOptions]}
+      Path = [string()] % ["a", "b", "c"] represents a/b/c
+      Module = module() % module responsible for requests
+      ModuleOptions = any() % module specific options
+
+An example configuration is shown
+here:
+
+    {modules, [
+           {mod_restful, [
+            {api,
+             [
+              {["admin"], mod_restful_admin, [
+               {key, "secret"},
+               {allowed_commands, [register, unregister]}
+              ]},
+              {["register"], mod_restful_register, [{key, "secret"}]}
+             ]}
+           ]}
+          ]}.
+
+This enables two sub paths to two different mod_restful modules:
+mod_restful_admin under http://hostname:8088/api/admin and
+mod_restful_register under http://hostname:8088/api/register.
+
+mod_restful_admin
+-----------------
+
+This module can be used for calling ejabberd commands remotely. Authorization
+of requests are by default done via HTTP Basic auth to authenticate a user with
+administrative privileges, or, if the key option is enabled, via a shared
+secret key.
+
+Request descriptions are done via HTTP POST requests, with a JSON document
+describing the request. Two examples of running the command register follows.
+
+To run a command, using admin@localhost:secret as basic authentication.
+
+    POST /api/admin HTTP/1.1
+    Host: example.net
+    Authorization: Basic YWRtaW5AbG9jYWxob3N0OnNlY3JldAo==
+    Content-Type: application/json
+    Content-Length: 63
+    
+    {"command":"register","args":["test","example.net","secret"]}
+
+To run a command, using a shared secret key:
+
+    POST /api/admin HTTP/1.1
+    Host: example.net
+    Content-Type: application/json
+    Content-Length: 78
+    
+    {"key":"secret","command":"register","args":["test","example.net","secret"]}
+
+When the request is authorized, the result of the command is converted to JSON.
+A reply from the server could look like this:
+
+    HTTP/1.1 200 OK
+    Content-Length: 54
+    Content-Type: application/json
+     
+    {"ok":"User test@example.net successfully registered"}
+
+Available options:
+
+    {key, Key}
+      Key = string() % secret key, used for authorization
+    {allowed_commands, [Command]}
+      Command = module() % ejabberd_command command
+
+mod_restful_register
+--------------------
+
+# Available options
+
+    {key, Key}
+      Key = string() % secret key, used for authorization
+    private_email
+
+mod_restful_register is an interface to user registration. It provides a
+RESTful API registering new accounts, removing existing accounts, changing
+passwords of existing accounts, and checking availability of accounts.
+
+Registration, removal and password changes are done with POST requests, while
+availability is a GET request. Using JSON, POST requests contain an object
+with keys and values. The following table describes required keys for each
+type of request.
+
+# Requests
+
+      Request type    | Key          | Description
+     ========================================================================
+                      | username     | New username
+      register        | host         | Hostname
+                      | password     | New password
+     -----------------+--------------+---------------------------------------
+                      | username     | Username to remove
+      unregister      | host         | Hostname
+                      | password     | Existing password, for authentication
+     -----------------+--------------+---------------------------------------
+                      | username     | Existing username
+                      | host         | Hostname
+      change_password | old_password | Old password, for authentication
+                      | new_password | New password
+     -----------------+--------------+---------------------------------------
+      *               | key          | Key used for authorizing the request
+     -----------------+--------------+---------------------------------------
+
+     *  - the key can be used to all of the above
+
+# Responses
+
+      Request type    | Response      | Description
+     ========================================================================
+                      | ok                   | Registration was successful
+      register        | email_not_set        | Registered without E-mail
+                      | {error, exists}      | Username already exists
+                      | {error, Error}       | Registration failed
+     -----------------+----------------------+-------------------------------
+                      | ok                   | Successfully unregistered
+      unregister      | {error, not_exists}  | Username was not registered
+                      | {error, net_allowed} | Password incorrect
+                      | {error, Error}       | Unregistration failed
+     -----------------+----------------------+-------------------------------
+                      | ok                   | Password changed
+      change_password | {error, not_allowed} | Old password was incorrect
+                      | {error, Error}       | Changing password failed
+     -----------------+----------------------+-------------------------------
+
+
+In JSON the form would be either a string, or a map. `ok` would be `"ok"`, and
+`{error, not_allowed}` would be `{"error":"not_allowed"}`.
+
+An example session follows:
+
+    POST /api/register/register HTTP/1.1
+    Host: example.net
+    Content-Type: application/json
+    Content-Length: 76
+    
+    {"key":"secret","username":"test","host":"example.net","password":"secret"]}
+
+If the request was successful, a response looks like this:
+
+    HTTP/1.1 200 OK
+    Content-Length: 4
+    Content-Type: application/json
+     
+    "ok"
+
+GET requests differ in that the parameters are provided in the URL. The
+available request is the is_registered request, which takes up to three
+parameters: key, username and host.
+
+      Request type   | Key          | Description
+     ========================================================================
+      is_registered  | username     | New username
+                     | host         | Hostname
+     ----------------+--------------+----------------------------------------
+
+Possible responses:
+
+      Request type   | Response       | Description
+     ========================================================================
+                     | true           | Username is registered
+      is_registered  | false          | Username is not registered
+                     | {error, Error} | Some error occurred
+     ----------------+----------------+--------------------------------------
+
+Output follows the same rules as the one in the POST requests.
+
+An example session follows:
+
+    GET /api/register/is_registered?username=test&host=example.net&key=secret
+    Host: example.net
+
+The response is either true or false (JSON encoded booleans). A response when
+the user exists is shown below.
+
+    HTTP/1.1 200 OK
+    Content-Length: 4
+    Content-Type: application/json
+
+    true
+
+# Hooks
+
+There can be hooks added for plugin style features. Currently the only hook
+implemented is `mod_restful_register_registered` which is called when a user
+successfully registered a new account. See [mod_private_email](https://github.com/jadahl/mod_private_email) for an example.
+
+A hook must return either the input value (`AccIn`) or key value pair added,
+to the beginning of the list `AccIn` (for example `[Foo | AccIn]`). The added
+value must be a key, value pair currently only allowing keys of the type
+`atom()` and values of either `float()`, `integer()` or `atom()`.
+
+If all hooks return nothing but the input value, the final response of the
+register request will be "ok". If else the request will be an object map
+consisting of the return values of the hooks.
+

@@ -1,0 +1,3 @@
+[submodule "lib/meck"]
+	path = lib/meck
+	url = git://github.com/jadahl/meck.git
